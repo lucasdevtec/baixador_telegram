@@ -7,6 +7,7 @@ Baixa todas as mensagens e arquivos de mídia de um chat/canal/grupo do Telegram
 import os
 import sys
 import re
+import ast
 import json
 import asyncio
 import argparse
@@ -179,8 +180,76 @@ async def get_credentials():
     return int(api_id), api_hash, phone_number
 
 
-async def select_chat_interactively(client):
-    """Lista os chats recentes e permite ao usuário escolher interativamente."""
+def parse_chat_inputs(chat_args):
+    """
+    Normaliza a lista de chats recebida da linha de comando, aceitando:
+    - Um único chat: "chat1"
+    - Múltiplos chats: ["chat1", "chat2"]
+    - Formato de lista string: "[chat1, chat2]" ou "['chat1', 'chat2']"
+    - Formato separado por vírgula: "chat1, chat2"
+    - Formato sem aspas dividido pelo shell: ["['chat1',", "'chat2']"]
+    """
+    if not chat_args:
+        return []
+    if isinstance(chat_args, str):
+        chat_args = [chat_args]
+
+    # Junta se o shell dividiu colchetes sem aspas (ex: --chat [chat1, chat2])
+    combined = " ".join(chat_args).strip()
+    if combined.startswith("[") and combined.endswith("]"):
+        chat_args = [combined]
+
+    results = []
+    for arg in chat_args:
+        arg = arg.strip()
+        if not arg:
+            continue
+
+        if arg.startswith("[") and arg.endswith("]"):
+            inner = arg[1:-1].strip()
+            try:
+                parsed = ast.literal_eval(arg)
+                if isinstance(parsed, (list, tuple)):
+                    results.extend([str(x).strip() for x in parsed if str(x).strip()])
+                    continue
+            except Exception:
+                pass
+            parts = [p.strip().strip("'\"") for p in inner.split(",") if p.strip()]
+            results.extend(parts)
+            continue
+
+        if "," in arg:
+            parts = [p.strip().strip("'\"") for p in arg.split(",") if p.strip()]
+            results.extend(parts)
+            continue
+
+        results.append(arg)
+
+    return results
+
+
+def parse_selection_indices(resp: str, max_val: int):
+    """Interpreta números, vírgulas e intervalos como 1, 2, 4 ou 1-3."""
+    indices = set()
+    cleaned = resp.replace(";", ",").replace(" ", ",")
+    parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+    for part in parts:
+        if "-" in part:
+            sub = part.split("-")
+            if len(sub) == 2 and sub[0].isdigit() and sub[1].isdigit():
+                start, end = int(sub[0]), int(sub[1])
+                for n in range(min(start, end), max(start, end) + 1):
+                    if 1 <= n <= max_val:
+                        indices.add(n)
+        elif part.isdigit():
+            n = int(part)
+            if 1 <= n <= max_val:
+                indices.add(n)
+    return sorted(list(indices))
+
+
+async def select_chats_interactively(client):
+    """Lista os chats recentes e permite ao usuário escolher um ou vários para a fila."""
     print("\n🔍 Carregando suas conversas recentes...")
     dialogs = []
     async for dialog in client.iter_dialogs(limit=30):
@@ -198,31 +267,32 @@ async def select_chat_interactively(client):
     print("=" * 60)
 
     while True:
-        resp = input("\n👉 Escolha o número [1-{}] ou digite o nome/username/ID (ou 's' para sair): ".format(len(dialogs))).strip()
+        resp = input(
+            f"\n👉 Escolha o(s) número(s) (ex: 1 ou 1, 3, 5 ou 1-3)\n"
+            f"   ou digite o nome/username/ID (ou 's' para sair): "
+        ).strip()
         if not resp:
             continue
         if resp.lower() == 's':
             print("Operação cancelada pelo usuário.")
             sys.exit(0)
 
-        # Selecionou pelo número da lista
-        if resp.isdigit():
-            idx = int(resp)
-            if 1 <= idx <= len(dialogs):
-                return dialogs[idx - 1].entity
+        # Verifica se digitou números/lista de números (ex: 1 ou 1, 2 ou 1-3)
+        indices = parse_selection_indices(resp, len(dialogs))
+        if indices:
+            return [dialogs[i - 1].entity for i in indices]
 
-        # Tentou pesquisar por nome ou ID
+        # Tenta como ID numérico único
         try:
-            # Tentar como ID numérico
             chat_id = int(resp)
-            return await client.get_entity(chat_id)
+            entity = await client.get_entity(chat_id)
+            return [entity]
         except Exception:
             pass
 
-        # Buscar nas conversas carregadas
+        # Buscar pelo nome nas conversas
         matches = [d for d in dialogs if resp.lower() in d.name.lower()]
         if not matches:
-            # Buscar mais a fundo
             print(f"Procurando por '{resp}' em todas as suas conversas...")
             async for d in client.iter_dialogs():
                 if resp.lower() in d.name.lower() and d not in matches:
@@ -231,24 +301,22 @@ async def select_chat_interactively(client):
                         break
 
         if len(matches) == 1:
-            return matches[0].entity
+            return [matches[0].entity]
         elif len(matches) > 1:
             print(f"\nForam encontrados {len(matches)} resultados:")
             for i, m in enumerate(matches, 1):
                 tipo = "Canal" if m.is_channel else ("Grupo" if m.is_group else "Direto")
                 print(f" [{i}] {m.name} ({tipo}) [ID: {m.id}]")
-            choice = input("Escolha o número do resultado desejado: ").strip()
-            if choice.isdigit() and 1 <= int(choice) <= len(matches):
-                return matches[int(choice) - 1].entity
+            choice = input("Escolha o(s) número(s) desejado(s) (ex: 1 ou 1, 2): ").strip()
+            sub_indices = parse_selection_indices(choice, len(matches))
+            if sub_indices:
+                return [matches[i - 1].entity for i in sub_indices]
         else:
             print(f"Chat '{resp}' não encontrado. Tente novamente.")
 
 
-async def resolve_chat(client, chat_target):
-    """Localiza a entidade do chat a partir de ID, username, link ou busca."""
-    if not chat_target:
-        return await select_chat_interactively(client)
-
+async def resolve_single_chat(client, chat_target):
+    """Localiza a entidade do chat a partir de ID, username, link ou busca textual."""
     # 1. Tentar resolver como ID inteiro
     try:
         chat_id = int(chat_target)
@@ -274,13 +342,11 @@ async def resolve_chat(client, chat_target):
     if len(matches) == 1:
         return matches[0].entity
     elif len(matches) > 1:
-        print(f"\nMúltiplos chats encontrados para '{chat_target}':")
-        for i, m in enumerate(matches, 1):
-            print(f" [{i}] {m.name} [ID: {m.id}]")
-        c = input("Escolha o número do chat: ").strip()
-        if c.isdigit() and 1 <= int(c) <= len(matches):
-            return matches[int(c) - 1].entity
-        raise ValueError("Opção inválida.")
+        # Se houver correspondência exata, prioriza
+        for m in matches:
+            if m.name.strip().lower() == chat_target.strip().lower():
+                return m.entity
+        return matches[0].entity
     else:
         raise ValueError(f"Não foi possível encontrar o chat '{chat_target}'.")
 
@@ -472,8 +538,10 @@ async def download_chat_content(
                 with open(json_file_path, "w", encoding="utf-8") as jf:
                     json.dump(all_messages_data, jf, ensure_ascii=False, indent=2)
 
+        interrupted = False
     except KeyboardInterrupt:
         print("\n\nOperação pausada pelo usuário! Salvando dados coletados até agora...")
+        interrupted = True
     finally:
         pbar_msgs.close()
 
@@ -503,6 +571,9 @@ async def download_chat_content(
         print(f" Pasta de mídias:  {media_dir}")
     print("=" * 60 + "\n")
 
+    if interrupted:
+        raise KeyboardInterrupt
+
 
 async def main():
     parser = argparse.ArgumentParser(
@@ -510,9 +581,9 @@ async def main():
     )
     parser.add_argument(
         "--chat", "-c",
-        type=str,
+        nargs="*",
         default=None,
-        help="Nome, @username, link ou ID do chat. Se omitido, exibirá uma lista interativa."
+        help="Nome(s), @username(s), link(s) ou ID(s) dos chats. Pode ser um único chat, múltiplos separados por espaço ou no formato [chat1, chat2]."
     )
     parser.add_argument(
         "--output", "-o",
@@ -524,7 +595,7 @@ async def main():
         "--limit", "-l",
         type=int,
         default=None,
-        help="Limite máximo de mensagens a serem baixadas (padrão: todas)"
+        help="Limite máximo de mensagens a serem baixadas por chat (padrão: todas)"
     )
     parser.add_argument(
         "--no-media",
@@ -553,15 +624,68 @@ async def main():
     print(f"✅ Conectado com sucesso como: {get_sender_name(me)} (ID: {me.id})")
 
     try:
-        entity = await resolve_chat(client, args.chat)
-        await download_chat_content(
-            client=client,
-            entity=entity,
-            output_dir=output_path,
-            download_media=not args.no_media,
-            limit=args.limit,
-            reverse=not args.no_reverse
-        )
+        raw_targets = parse_chat_inputs(args.chat)
+        entities = []
+
+        if not raw_targets:
+            entities = await select_chats_interactively(client)
+        else:
+            print(f"\n🔍 Localizando {len(raw_targets)} chat(s) solicitado(s)...")
+            for target in raw_targets:
+                try:
+                    ent = await resolve_single_chat(client, target)
+                    if ent:
+                        entities.append(ent)
+                except Exception as e:
+                    print(f"⚠️ Atenção: Não foi possível localizar o chat '{target}': {e}")
+
+        # Deduplica entidades mantendo a ordem original
+        seen_ids = set()
+        unique_entities = []
+        for ent in entities:
+            if ent.id not in seen_ids:
+                seen_ids.add(ent.id)
+                unique_entities.append(ent)
+
+        if not unique_entities:
+            print("Nenhum chat para baixar.")
+            return
+
+        total_chats = len(unique_entities)
+        print("\n" + "=" * 60)
+        print(f" 📋 FILA DE PROCESSAMENTO: {total_chats} CHAT(S) ENFILEIRADO(S)")
+        for i, ent in enumerate(unique_entities, 1):
+            name = getattr(ent, 'title', None) or getattr(ent, 'first_name', 'Chat')
+            print(f"  {i}. {name} (ID: {ent.id})")
+        print("=" * 60)
+
+        for idx, entity in enumerate(unique_entities, 1):
+            name = getattr(entity, 'title', None) or getattr(entity, 'first_name', 'Chat')
+            print(f"\n{'#' * 60}")
+            print(f" [{idx}/{total_chats}] PROCESSANDO: {name}")
+            print(f"{'#' * 60}")
+
+            try:
+                await download_chat_content(
+                    client=client,
+                    entity=entity,
+                    output_dir=output_path,
+                    download_media=not args.no_media,
+                    limit=args.limit,
+                    reverse=not args.no_reverse
+                )
+                print(f"✅ [{idx}/{total_chats}] Concluído com sucesso: {name}")
+            except KeyboardInterrupt:
+                print("\n🛑 Fila cancelada pelo usuário.")
+                break
+            except Exception as e:
+                print(f"❌ [{idx}/{total_chats}] Erro ao baixar '{name}': {e}")
+                if idx < total_chats:
+                    print("Continuando com o próximo chat da fila...")
+
+        print("\n" + "=" * 60)
+        print(" 🏁 TODOS OS CHATS DA FILA FORAM PROCESSADOS!")
+        print("=" * 60 + "\n")
     finally:
         await client.disconnect()
 

@@ -68,30 +68,38 @@ python3 baixador.py
 ```
 
 O script cuidará de criar o ambiente virtual, instalar as dependências e listará suas conversas recentes numeradas no terminal para você escolher.
+> 💡 **Seleção múltipla:** Você pode digitar um único número (ex: `1`), múltiplos separados por vírgula (ex: `1, 3, 5`) ou intervalos (ex: `1-4`) para enfileirar vários chats de uma vez!
 
 ---
 
-### 2. Passando o Chat Diretamente
+### 2. Passando Chats Diretamente (Único ou Fila)
 
-Por nome ou trecho do nome:
+**Chat único:**
 ```bash
 ./run.sh --chat "Nome do Canal"
-```
-
-Por `@username`:
-```bash
 ./run.sh --chat "@canal_exemplo"
-```
-
-Por ID numérico:
-```bash
 ./run.sh --chat "-1001234567890"
-```
-
-Por link de convite/público:
-```bash
 ./run.sh --chat "https://t.me/nomedocanal"
 ```
+
+**Enfileirando múltiplos chats:**
+
+No formato de lista `[chat1, chat2]`:
+```bash
+./run.sh --chat "[Canal 1, Canal 2]"
+```
+
+Múltiplos argumentos separados por espaço:
+```bash
+./run.sh --chat "Canal 1" "Canal 2" "@canal3"
+```
+
+Separados por vírgula:
+```bash
+./run.sh --chat "Canal 1, @canal2, Canal 3"
+```
+
+O script processará cada chat da fila em sequência, criando a pasta correspondente de cada um dentro de `./baixado/`. Se houver falha em algum chat específico, o erro será exibido e a fila continuará automaticamente para os próximos!
 
 ---
 
@@ -99,9 +107,9 @@ Por link de convite/público:
 
 | Parâmetro | Descrição |
 |---|---|
-| `--chat`, `-c` | Nome, `@username`, link ou ID do chat |
+| `--chat`, `-c` | Nome(s), `@username(s)`, link(s) ou ID(s) dos chats. Suporta chat único, lista `[chat1, chat2]` ou múltiplos valores. |
 | `--output`, `-o` | Pasta base de destino (padrão: `./baixado`) |
-| `--limit`, `-l` | Limite de mensagens a baixar (ex: `--limit 100`) |
+| `--limit`, `-l` | Limite de mensagens a baixar por chat (ex: `--limit 100`) |
 | `--no-media` | Baixa apenas o histórico de mensagens (sem baixar arquivos pesados) |
 | `--no-reverse` | Baixa da mais recente para a mais antiga (padrão é cronológico) |
 
