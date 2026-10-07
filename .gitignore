@@ -1,0 +1,31 @@
+# Ambiente Virtual
+.venv/
+env/
+venv/
+ENV/
+
+# Credenciais Sensíveis e Sessões MTProto do Telegram
+.env
+.env.local
+*.session
+*.session-journal
+
+# Diretório de conteúdo baixado
+baixado/
+
+# Caches do Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Editores e IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Arquivos do Sistema Operacional
+.DS_Store
+Thumbs.db
